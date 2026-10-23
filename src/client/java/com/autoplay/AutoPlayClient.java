@@ -60,6 +60,7 @@ public class AutoPlayClient implements ClientModInitializer {
     private int ticksDead = 0;
     private int episodeTicks = 0;
     private long totalTicks = 0;
+    private boolean useTeacher = false;
 
     @Override
     public void onInitializeClient() {
@@ -132,15 +133,18 @@ public class AutoPlayClient implements ClientModInitializer {
         }
 
         // ---- choose and apply a new action
-        applyAction(mc, p, brain.act(x));
+        if (totalTicks % 20 == 0) useTeacher = brain.rnd.nextDouble() < brain.teacherProb;
+        brain.teacherProb = Math.max(0.05, brain.teacherProb - 0.00002);
+        applyAction(mc, p, brain.act(x, useTeacher ? teacherAction(raw) : null));
         prevRaw = raw;
         episodeTicks++;
         totalTicks++;
 
         if (totalTicks % 2000 == 0) brain.save(savePath);
         if (totalTicks % 20 == 0) {
-            say(mc, String.format(Locale.ROOT, "AutoPlay | deaths %d | kills %d | best life %ds | this life %ds",
-                    brain.deaths, brain.kills, brain.bestTicks / 20, episodeTicks / 20));
+            say(mc, String.format(Locale.ROOT, "AutoPlay | deaths %d | kills %d | best life %ds | this life %ds | teacher %d%%",
+                    brain.deaths, brain.kills, brain.bestTicks / 20, episodeTicks / 20,
+                    (int) Math.round(brain.teacherProb * 100)));
         }
     }
 
@@ -214,6 +218,31 @@ public class AutoPlayClient implements ClientModInitializer {
         return Math.max(-6, Math.min(6, r));
     }
 
+    // ----------------------------------------------------------------- teacher
+
+    /** Simple hand-written fighter: face the enemy, walk up, hit when in reach. The AI copies it early on. */
+    private static int[] teacherAction(double[] r) {
+        boolean has = r[HAS] == 1;
+        double dist = r[DIST];
+        int forward = 0, sprint = 0, attack = 0;
+        if (has) {
+            forward = dist > 2.5 ? 1 : 0;
+            sprint = dist > 5 ? 1 : 0;
+            if (dist < 3.3 && Math.abs(r[YAW]) < 15 && Math.abs(r[PITCH]) < 20 && r[CD] > 0.9) attack = 1;
+        }
+        int yaw = has ? nearest(YAW_BINS, (float) r[YAW]) : 3;
+        int pitch = has ? nearest(PITCH_BINS, (float) r[PITCH]) : 2;
+        return new int[]{forward, 0, 0, sprint, attack, yaw, pitch};
+    }
+
+    private static int nearest(float[] bins, float want) {
+        int best = 0;
+        for (int i = 1; i < bins.length; i++) {
+            if (Math.abs(bins[i] - want) < Math.abs(bins[best] - want)) best = i;
+        }
+        return best;
+    }
+
     // ----------------------------------------------------------------- actions
 
     private void applyAction(MinecraftClient mc, ClientPlayerEntity p, int[] a) {
@@ -275,7 +304,7 @@ public class AutoPlayClient implements ClientModInitializer {
         static final int O_WV = O_BP + OUT;
         static final int O_BV = O_WV + H;
         static final int N = O_BV + 1;
-        static final int MAGIC = 0xA17B0001;
+        static final int MAGIC = 0xA17B0002;
         static final int CAP = 1024;
 
         final double[] w = new double[N];
@@ -301,6 +330,9 @@ public class AutoPlayClient implements ClientModInitializer {
         final int[][] bAct = new int[CAP][];
         final double[] bRew = new double[CAP], bVal = new double[CAP];
         final boolean[] bDone = new boolean[CAP];
+        final boolean[] bTeacher = new boolean[CAP];
+        boolean pTeacher = false;
+        double teacherProb = 0.8; // how often the built-in teacher drives; fades over time
         int n = 0;
 
         // lifetime stats (saved with the weights)
@@ -313,10 +345,11 @@ public class AutoPlayClient implements ClientModInitializer {
             init(O_WV, H, 0.1);
             // sane starting habits: walk forward, sometimes sprint/attack, keep aim steady
             w[O_BP + 1] += 1.0;   // forward
+            w[O_BP + 6] += 1.5;   // jump: mostly don't
             w[O_BP + 9] += 0.5;   // sprint
             w[O_BP + 11] += 0.5;  // attack
-            w[O_BP + 15] += 0.5;  // yaw: no turn
-            w[O_BP + 21] += 0.5;  // pitch: no turn
+            w[O_BP + 15] += 1.5;  // yaw: mostly no turn
+            w[O_BP + 21] += 1.5;  // pitch: mostly no turn
         }
 
         private void init(int off, int len, double scale) {
@@ -368,11 +401,12 @@ public class AutoPlayClient implements ClientModInitializer {
         double value(double[] x) { return forward(x); }
 
         /** Pick an action by sampling the policy, and remember it until its reward arrives. */
-        int[] act(double[] x) {
+        int[] act(double[] x, int[] forced) {
             double val = forward(x);
             int[] a = new int[HEADS.length];
             int hs = 0;
             for (int h = 0; h < HEADS.length; h++) {
+                if (forced != null) { a[h] = forced[h]; hs += HEADS[h]; continue; }
                 double r = rnd.nextDouble(), c = 0;
                 int pick = HEADS[h] - 1;
                 for (int i = 0; i < HEADS[h]; i++) {
@@ -382,6 +416,7 @@ public class AutoPlayClient implements ClientModInitializer {
                 a[h] = pick;
                 hs += HEADS[h];
             }
+            pTeacher = forced != null;
             pObs = x.clone();
             pAct = a;
             pVal = val;
@@ -397,6 +432,7 @@ public class AutoPlayClient implements ClientModInitializer {
             bRew[n] = r;
             bVal[n] = pVal;
             bDone[n] = done;
+            bTeacher[n] = pTeacher;
             n++;
             pending = false;
         }
@@ -420,7 +456,7 @@ public class AutoPlayClient implements ClientModInitializer {
             mean /= n;
             for (double a : adv) var += (a - mean) * (a - mean);
             double std = Math.sqrt(var / n) + 1e-8;
-            for (int t = 0; t < n; t++) adv[t] = (adv[t] - mean) / std;
+            for (int t = 0; t < n; t++) adv[t] = bTeacher[t] ? 1.0 : (adv[t] - mean) / std;
 
             Arrays.fill(g, 0);
             for (int t = 0; t < n; t++) {
@@ -504,6 +540,7 @@ public class AutoPlayClient implements ClientModInitializer {
                 out.writeInt(deaths);
                 out.writeInt(kills);
                 out.writeInt(bestTicks);
+                out.writeDouble(teacherProb);
             } catch (IOException ignored) { }
         }
 
@@ -518,6 +555,7 @@ public class AutoPlayClient implements ClientModInitializer {
                 deaths = in.readInt();
                 kills = in.readInt();
                 bestTicks = in.readInt();
+                teacherProb = in.readDouble();
             } catch (IOException ignored) { }
         }
     }
