@@ -4,22 +4,26 @@ import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.keybinding.v1.KeyBindingHelper;
 import net.fabricmc.loader.api.FabricLoader;
-import net.minecraft.client.MinecraftClient;
-import net.minecraft.client.gui.screen.DeathScreen;
-import net.minecraft.client.network.ClientPlayerEntity;
-import net.minecraft.client.option.KeyBinding;
-import net.minecraft.client.util.InputUtil;
-import net.minecraft.entity.Entity;
-import net.minecraft.entity.LivingEntity;
-import net.minecraft.entity.decoration.ArmorStandEntity;
-import net.minecraft.entity.player.PlayerEntity;
-import net.minecraft.text.Text;
-import net.minecraft.util.Hand;
-import net.minecraft.util.Identifier;
-import net.minecraft.util.hit.EntityHitResult;
-import net.minecraft.util.hit.HitResult;
-import net.minecraft.util.math.MathHelper;
-import net.minecraft.util.math.Vec3d;
+import net.minecraft.class_1268;
+import net.minecraft.class_1297;
+import net.minecraft.class_1309;
+import net.minecraft.class_1531;
+import net.minecraft.class_1657;
+import net.minecraft.class_1661;
+import net.minecraft.class_1799;
+import net.minecraft.class_1829;
+import net.minecraft.class_1743;
+import net.minecraft.class_239;
+import net.minecraft.class_243;
+import net.minecraft.class_2561;
+import net.minecraft.class_2960;
+import net.minecraft.class_304;
+import net.minecraft.class_310;
+import net.minecraft.class_3532;
+import net.minecraft.class_3675;
+import net.minecraft.class_3966;
+import net.minecraft.class_418;
+import net.minecraft.class_746;
 import org.lwjgl.glfw.GLFW;
 
 import java.io.*;
@@ -27,14 +31,16 @@ import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.Locale;
 import java.util.Random;
+import java.util.Properties;
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * AutoPlay AI - one self-contained mod.
  *
- * Press K: the bot plays for you. It learns by trial and error (an actor-critic
- * neural network written in plain Java, no extra libraries). Every death ends an
- * episode and triggers a learning update, so it improves the more it dies.
- * Its brain is saved to  config/autoplay-brain.bin  and reloaded next launch.
+ * Experimental client-side automation for worlds/servers where it is explicitly allowed.
+ * K toggles, J toggles training, U shows stats, C cycles presets, X emergency-stops.
+ * This is a small policy-learning prototype, not a guaranteed strong PvP agent.
  */
 public class AutoPlayClient implements ClientModInitializer {
 
@@ -48,35 +54,69 @@ public class AutoPlayClient implements ClientModInitializer {
     private static final int HP = 0, FOOD = 1, HAS = 2, DIST = 3, YAW = 4, PITCH = 5, DY = 6,
             VX = 7, VY = 8, VZ = 9, GROUND = 10, CD = 11, EHP = 12, RAW_N = 13;
 
-    private static KeyBinding toggleKey;
+    private static class_304 toggleKey;
+    private static class_304 trainingKey;
+    private static class_304 statsKey;
+    private static class_304 configKey;
+    private static class_304 emergencyKey;
+    private static class_304 guiKey;
 
     private final Brain brain = new Brain();
     private Path savePath;
+    private Path settingsPath;
+    private TrainingStore trainingStore;
+    private Path trainingPath;
+    private boolean recordManual = false;
+    private boolean observePlayers = false;
+    private long lastManualSampleTick = 0;
+    private long lastObservedSampleTick = 0;
+    private long recorderTicks = 0;
 
     private boolean enabled = false;
-    private LivingEntity target;
+    private class_1309 target;
     private double[] prevRaw;
     private boolean deathReported = false;
     private int ticksDead = 0;
     private int episodeTicks = 0;
     private long totalTicks = 0;
     private boolean useTeacher = false;
+    private boolean trainingMode = true;
+    private boolean emergencyStopped = false;
+    private boolean circleStrafe = true;
+    private int configPreset = 1; // 0 cautious, 1 balanced, 2 aggressive
+    private int statusTicks = 0;
+    private int strafePhase = 0;
+    private int lastKnownEnemyHealth = 0;
 
     @Override
     public void onInitializeClient() {
         savePath = FabricLoader.getInstance().getConfigDir().resolve("autoplay-brain.bin");
+        settingsPath = FabricLoader.getInstance().getConfigDir().resolve("autoplay-settings.properties");
+        trainingPath = FabricLoader.getInstance().getConfigDir().resolve("autoplay-training.csv");
+        trainingStore = new TrainingStore(trainingPath);
         brain.load(savePath);
+        loadSettings();
 
-        KeyBinding.Category category = KeyBinding.Category.create(Identifier.of("autoplay", "main"));
+        class_304.class_11900 category = class_304.class_11900.method_74698(class_2960.method_60655("autoplay", "main"));
         toggleKey = KeyBindingHelper.registerKeyBinding(
-                new KeyBinding("key.autoplay.toggle", InputUtil.Type.KEYSYM, GLFW.GLFW_KEY_K, category));
+                new class_304("key.autoplay.toggle", class_3675.class_307.field_1668, GLFW.GLFW_KEY_K, category));
+        trainingKey = KeyBindingHelper.registerKeyBinding(
+                new class_304("key.autoplay.training", class_3675.class_307.field_1668, GLFW.GLFW_KEY_J, category));
+        statsKey = KeyBindingHelper.registerKeyBinding(
+                new class_304("key.autoplay.stats", class_3675.class_307.field_1668, GLFW.GLFW_KEY_U, category));
+        configKey = KeyBindingHelper.registerKeyBinding(
+                new class_304("key.autoplay.config", class_3675.class_307.field_1668, GLFW.GLFW_KEY_C, category));
+        emergencyKey = KeyBindingHelper.registerKeyBinding(
+                new class_304("key.autoplay.emergency", class_3675.class_307.field_1668, GLFW.GLFW_KEY_X, category));
+        guiKey = KeyBindingHelper.registerKeyBinding(
+                new class_304("key.autoplay.gui", class_3675.class_307.field_1668, GLFW.GLFW_KEY_G, category));
 
         ClientTickEvents.END_CLIENT_TICK.register(this::onTick);
     }
 
     // ------------------------------------------------------------------ toggle
 
-    private void setEnabled(MinecraftClient mc, boolean on) {
+    private void setEnabled(class_310 mc, boolean on) {
         enabled = on;
         target = null;
         prevRaw = null;
@@ -84,39 +124,183 @@ public class AutoPlayClient implements ClientModInitializer {
         episodeTicks = 0;
         brain.discard();
         if (on) {
+            emergencyStopped = false;
             say(mc, "AutoPlay ON");
         } else {
-            KeyBinding.unpressAll();
+            releaseControls(mc);
+            class_304.method_1437();
             brain.save(savePath);
             say(mc, "AutoPlay OFF (brain saved)");
         }
     }
 
-    private void say(MinecraftClient mc, String msg) {
-        if (mc.player != null) mc.player.sendMessage(Text.literal(msg), true);
+    private void say(class_310 mc, String msg) {
+        if (mc.field_1724 != null) mc.field_1724.method_7353(class_2561.method_43470(msg), true);
+    }
+
+    void openTrainingGui(class_310 mc) { mc.method_1507(new AutoPlayScreen(this)); }
+    boolean isEnabled() { return enabled; }
+    boolean isManualRecording() { return recordManual; }
+    boolean isObservingPlayers() { return observePlayers; }
+    int sampleCount() { return trainingStore == null ? 0 : trainingStore.size(); }
+    int replayCount() { return trainingStore == null ? 0 : trainingStore.replayCount(); }
+    int kills() { return brain.kills; }
+    int deaths() { return brain.deaths; }
+    int bestTicks() { return brain.bestTicks; }
+    int preset() { return configPreset; }
+    String presetName() { return new String[]{"Cautious", "Balanced", "Aggressive"}[configPreset]; }
+
+    void toggleManualRecording(class_310 mc) {
+        recordManual = !recordManual;
+        say(mc, "Manual learning recording " + (recordManual ? "ON" : "OFF"));
+    }
+    void togglePlayerObservation(class_310 mc) {
+        observePlayers = !observePlayers;
+        say(mc, "Visible-player observation " + (observePlayers ? "ON" : "OFF"));
+    }
+    void toggleAutoplay(class_310 mc) { setEnabled(mc, !enabled); }
+    void cyclePresetFromGui(class_310 mc) { cycleConfig(mc); }
+    void replayTrain(class_310 mc) {
+        if (trainingStore == null) return;
+        int learned = 0;
+        for (TrainingStore.Sample sample : trainingStore.loadAll()) {
+            brain.learnExample(sample.observation, sample.action);
+            learned++;
+        }
+        brain.update(0.0);
+        brain.save(savePath);
+        say(mc, "Replay training processed " + learned + " examples");
+    }
+    void clearTrainingData(class_310 mc) {
+        if (trainingStore != null && trainingStore.clear()) say(mc, "Training examples cleared");
+        else say(mc, "Could not clear training examples");
+    }
+
+    private void releaseControls(class_310 mc) {
+        if (mc == null || mc.field_1690 == null) return;
+        mc.field_1690.field_1894.method_23481(false);
+        mc.field_1690.field_1881.method_23481(false);
+        mc.field_1690.field_1913.method_23481(false);
+        mc.field_1690.field_1849.method_23481(false);
+        mc.field_1690.field_1903.method_23481(false);
+        mc.field_1690.field_1867.method_23481(false);
+    }
+
+    private void showStats(class_310 mc) {
+        say(mc, "AutoPlay stats | Kills " + brain.kills + " | Deaths " + brain.deaths
+                + " | K/D " + String.format(Locale.ROOT, "%.2f", brain.kills / (double)Math.max(1, brain.deaths))
+                + " | Best life " + brain.bestTicks / 20 + "s | Train " + (trainingMode ? "ON" : "OFF"));
+        say(mc, "Enemy: " + (target == null ? "none" : String.format(Locale.ROOT, "%.1f blocks, %.1f HP",
+                mc.field_1724.method_5739(target), target.method_6032()))
+                + " | Preset " + new String[]{"Cautious", "Balanced", "Aggressive"}[configPreset]);
+    }
+
+    private void cycleConfig(class_310 mc) {
+        configPreset = (configPreset + 1) % 3;
+        circleStrafe = configPreset != 0;
+        saveSettings();
+        say(mc, "AutoPlay preset: " + new String[]{"Cautious", "Balanced", "Aggressive"}[configPreset]
+                + " | circle-strafe " + (circleStrafe ? "ON" : "OFF")
+                + " | press C again to cycle");
+        brain.save(savePath);
+    }
+
+    private void loadSettings() {
+        if (settingsPath == null || !settingsPath.toFile().exists()) return;
+        Properties props = new Properties();
+        try (InputStream in = new FileInputStream(settingsPath.toFile())) {
+            props.load(in);
+            configPreset = Math.max(0, Math.min(2, Integer.parseInt(props.getProperty("preset", "1"))));
+            trainingMode = Boolean.parseBoolean(props.getProperty("training", "true"));
+            circleStrafe = configPreset != 0;
+            brain.teacherProb = Double.parseDouble(props.getProperty("teacherProbability",
+                    trainingMode ? "0.55" : "0.15"));
+        } catch (Exception ignored) {
+            configPreset = 1;
+            trainingMode = true;
+            circleStrafe = true;
+        }
+    }
+
+    private void saveSettings() {
+        if (settingsPath == null) return;
+        Properties props = new Properties();
+        props.setProperty("preset", Integer.toString(configPreset));
+        props.setProperty("training", Boolean.toString(trainingMode));
+        props.setProperty("teacherProbability", Double.toString(brain.teacherProb));
+        try (OutputStream out = new FileOutputStream(settingsPath.toFile())) {
+            props.store(out, "AutoPlay AI settings");
+        } catch (IOException ignored) { }
+    }
+
+    private void selectWeapon(class_746 p) {
+        // Select the best sword/axe in the hotbar only; never move items or alter inventory contents.
+        class_1661 inv = p.method_31548();
+        int bestSlot = inv.field_7545;
+        int bestScore = -1;
+        for (int slot = 0; slot < 9; slot++) {
+            class_1799 stack = inv.method_5438(slot);
+            if (stack.method_7909() instanceof class_1829) {
+                int score = 100;
+                if (score > bestScore) { bestScore = score; bestSlot = slot; }
+            } else if (stack.method_7909() instanceof class_1743) {
+                int score = 90;
+                if (score > bestScore) { bestScore = score; bestSlot = slot; }
+            }
+        }
+        if (bestScore >= 0) inv.field_7545 = bestSlot;
     }
 
     // -------------------------------------------------------------------- tick
 
-    private void onTick(MinecraftClient mc) {
-        while (toggleKey.wasPressed()) setEnabled(mc, !enabled);
+    private void onTick(class_310 mc) {
+        while (toggleKey.method_1436()) setEnabled(mc, !enabled);
+        while (guiKey.method_1436()) openTrainingGui(mc);
+        while (trainingKey.method_1436()) {
+            trainingMode = !trainingMode;
+            brain.teacherProb = trainingMode ? Math.max(brain.teacherProb, 0.55) : Math.min(brain.teacherProb, 0.15);
+            say(mc, "AutoPlay training mode " + (trainingMode ? "ON" : "OFF"));
+            saveSettings();
+            brain.save(savePath);
+        }
+        while (statsKey.method_1436()) showStats(mc);
+        while (configKey.method_1436()) cycleConfig(mc);
+        while (emergencyKey.method_1436()) {
+            emergencyStopped = true;
+            enabled = false;
+            releaseControls(mc);
+            class_304.method_1437();
+            brain.save(savePath);
+            say(mc, "AutoPlay EMERGENCY STOP. Press K to re-enable.");
+        }
+        class_746 p = mc.field_1724;
+        if (guiKey != null && mc.field_1755 instanceof AutoPlayScreen) return;
+        if (p == null || mc.field_1687 == null) {
+            if (enabled) releaseControls(mc);
+            return;
+        }
+        // Manual and observation collection run independently of AutoPlay being enabled.
+        if (mc.field_1755 == null && !p.method_29504()) recordTrainingSamples(mc, p);
         if (!enabled) return;
-
-        ClientPlayerEntity p = mc.player;
-        if (p == null || mc.world == null) return;
+        if (emergencyStopped) emergencyStopped = false;
 
         // ---- dead: report once, then respawn
-        if (p.isDead() || mc.currentScreen instanceof DeathScreen) {
+        if (p.method_29504() || mc.field_1755 instanceof class_418) {
+            releaseControls(mc);
             if (!deathReported) onDeath(mc);
-            if (ticksDead++ % 20 == 10) p.requestRespawn();
+            if (ticksDead++ % 20 == 10) p.method_7331();
             return;
         }
         deathReported = false;
-        if (mc.currentScreen != null) return; // menu/chat open: don't act
+        ticksDead = 0;
+        if (mc.field_1755 != null) {
+            releaseControls(mc);
+            return; // menu/chat open: don't act
+        }
 
         // ---- target tracking (locked until it dies or vanishes)
         int killed = 0;
-        if (target != null && (!target.isAlive() || target.isRemoved())) {
+        if (target != null && (!target.method_5805() || target.method_31481())) {
             killed = 1;
             brain.kills++;
             target = null;
@@ -135,23 +319,27 @@ public class AutoPlayClient implements ClientModInitializer {
         // ---- choose and apply a new action
         if (totalTicks % 20 == 0) useTeacher = brain.rnd.nextDouble() < brain.teacherProb;
         brain.teacherProb = Math.max(0.05, brain.teacherProb - 0.00002);
-        applyAction(mc, p, brain.act(x, useTeacher ? teacherAction(raw) : null));
+        selectWeapon(p);
+        applyAction(mc, p, brain.act(x, useTeacher ? teacherAction(raw, episodeTicks, configPreset) : null));
         prevRaw = raw;
         episodeTicks++;
         totalTicks++;
 
-        if (totalTicks % 2000 == 0) brain.save(savePath);
-        if (totalTicks % 20 == 0) {
-            say(mc, String.format(Locale.ROOT, "AutoPlay | deaths %d | kills %d | best life %ds | this life %ds | teacher %d%%",
-                    brain.deaths, brain.kills, brain.bestTicks / 20, episodeTicks / 20,
-                    (int) Math.round(brain.teacherProb * 100)));
+        if (totalTicks % 1000 == 0) {
+            brain.save(savePath);
+            saveSettings();
+        }
+        if (++statusTicks >= 200) {
+            statusTicks = 0;
+            say(mc, String.format(Locale.ROOT, "AutoPlay | K %d D %d | best life %ds | training %s",
+                    brain.kills, brain.deaths, brain.bestTicks / 20, trainingMode ? "ON" : "OFF"));
         }
     }
 
-    private void onDeath(MinecraftClient mc) {
+    private void onDeath(class_310 mc) {
         deathReported = true;
         ticksDead = 0;
-        KeyBinding.unpressAll();
+        class_304.method_1437();
         if (brain.hasPending()) {
             brain.reward(-5.0, true);
             brain.update(0.0); // learn from this death right now
@@ -164,32 +352,132 @@ public class AutoPlayClient implements ClientModInitializer {
         if (brain.deaths % 5 == 0) brain.save(savePath);
     }
 
+    // ------------------------------------------------------------- demonstration capture
+
+    private void recordTrainingSamples(class_310 mc, class_746 p) {
+        if (trainingStore == null) return;
+        recorderTicks++;
+        if (recordManual && recorderTicks - lastManualSampleTick >= 5) {
+            class_1309 oldTarget = target;
+            target = nearestPlayer(p, mc);
+            double[] raw = observe(p);
+            if (target != null) {
+                int[] action = manualAction(mc, raw);
+                trainingStore.append("manual", normalize(raw), action);
+                if (trainingStore.size() % 16 == 0) {
+                    for (TrainingStore.Sample sample : trainingStore.loadRecent(16)) brain.learnExample(sample.observation, sample.action);
+                    brain.update(0.0);
+                }
+            }
+            lastManualSampleTick = recorderTicks;
+            target = oldTarget;
+        }
+        if (observePlayers && recorderTicks - lastObservedSampleTick >= 5) {
+            class_1309 actor = nearestOtherPlayer(p, mc);
+            if (actor instanceof class_1657 other) {
+                class_1309 oldTarget = target;
+                target = p;
+                double[] raw = observeActor(other, p);
+                int[] inferred = inferVisibleAction(other, raw, (int)recorderTicks);
+                trainingStore.append("watch", normalize(raw), inferred);
+                target = oldTarget;
+                if (trainingStore.size() % 16 == 0) {
+                    for (TrainingStore.Sample sample : trainingStore.loadRecent(16)) brain.learnExample(sample.observation, sample.action);
+                    brain.update(0.0);
+                }
+            }
+            lastObservedSampleTick = recorderTicks;
+        }
+    }
+
+    private class_1309 nearestPlayer(class_746 p, class_310 mc) {
+        class_1309 best = null;
+        double bestDist = TARGET_RANGE;
+        for (class_1297 entity : mc.field_1687.method_18112()) {
+            if (entity instanceof class_1657 player && player != p && player.method_5805()) {
+                double d = p.method_5739(player);
+                if (d < bestDist) { bestDist = d; best = player; }
+            }
+        }
+        return best;
+    }
+
+    private class_1309 nearestOtherPlayer(class_746 p, class_310 mc) {
+        return nearestPlayer(p, mc);
+    }
+
+    private double[] observeActor(class_1657 actor, class_1309 opponent) {
+        double[] o = new double[RAW_N];
+        o[HP] = actor.method_6032();
+        o[FOOD] = actor.method_7344().method_7586();
+        o[DIST] = TARGET_RANGE;
+        if (opponent != null) {
+            class_243 delta = opponent.method_5829().method_1005().method_1020(actor.method_33571());
+            double hor = Math.sqrt(delta.field_1352 * delta.field_1352 + delta.field_1350 * delta.field_1350);
+            float wantYaw = (float)Math.toDegrees(Math.atan2(-delta.field_1352, delta.field_1350));
+            float wantPitch = (float)-Math.toDegrees(Math.atan2(delta.field_1351, hor));
+            o[HAS] = 1; o[DIST] = delta.method_1033();
+            o[YAW] = class_3532.method_15393(wantYaw - actor.method_36454());
+            o[PITCH] = wantPitch - actor.method_36455(); o[DY] = delta.field_1351;
+            o[EHP] = opponent.method_6032();
+        }
+        class_243 velocity = actor.method_18798();
+        o[VX] = velocity.field_1352; o[VY] = velocity.field_1351; o[VZ] = velocity.field_1350;
+        o[GROUND] = actor.method_24828() ? 1 : 0;
+        o[CD] = actor.method_7261(0f);
+        return o;
+    }
+
+    private int[] manualAction(class_310 mc, double[] raw) {
+        int forward = mc.field_1690.field_1894.method_1434() ? 1 : (mc.field_1690.field_1881.method_1434() ? 2 : 0);
+        int strafe = mc.field_1690.field_1913.method_1434() ? 1 : (mc.field_1690.field_1849.method_1434() ? 2 : 0);
+        int jump = mc.field_1690.field_1903.method_1434() ? 1 : 0;
+        int sprint = mc.field_1690.field_1867.method_1434() ? 1 : 0;
+        int attack = mc.field_1690.field_1886.method_1434() ? 1 : 0;
+        int yaw = nearest(YAW_BINS, (float)raw[YAW]);
+        int pitch = nearest(PITCH_BINS, (float)raw[PITCH]);
+        return new int[]{forward, strafe, jump, sprint, attack, yaw, pitch};
+    }
+
+    private int[] inferVisibleAction(class_1657 actor, double[] raw, int tick) {
+        // Inference only: client can observe position/rotation/velocity, not another player's key presses.
+        class_243 velocity = actor.method_18798();
+        double speed = Math.sqrt(velocity.field_1352 * velocity.field_1352 + velocity.field_1350 * velocity.field_1350);
+        int forward = speed > 0.08 ? 1 : 0;
+        int strafe = Math.abs(velocity.field_1352) > Math.abs(velocity.field_1350) ? 1 : 2;
+        int jump = !actor.method_24828() ? 1 : 0;
+        int sprint = speed > 0.18 ? 1 : 0;
+        int attack = actor.method_6055(1.0f) > 0.1f ? 1 : 0;
+        return new int[]{forward, strafe, jump, sprint, attack,
+                nearest(YAW_BINS, (float)raw[YAW]), nearest(PITCH_BINS, (float)raw[PITCH])};
+    }
+
     // ------------------------------------------------------------- observation
 
-    private double[] observe(ClientPlayerEntity p) {
+    private double[] observe(class_746 p) {
         double[] o = new double[RAW_N];
-        o[HP] = p.getHealth();
-        o[FOOD] = p.getHungerManager().getFoodLevel();
+        o[HP] = p.method_6032();
+        o[FOOD] = p.method_7344().method_7586();
         o[DIST] = TARGET_RANGE;
         if (target != null) {
-            Vec3d from = p.getEyePos();
-            Vec3d d = target.getBoundingBox().getCenter().subtract(from);
-            double hor = Math.sqrt(d.x * d.x + d.z * d.z);
-            float wantYaw = (float) Math.toDegrees(Math.atan2(-d.x, d.z));
-            float wantPitch = (float) -Math.toDegrees(Math.atan2(d.y, hor));
+            class_243 from = p.method_33571();
+            class_243 d = target.method_5829().method_1005().method_1020(from);
+            double hor = Math.sqrt(d.field_1352 * d.field_1352 + d.field_1350 * d.field_1350);
+            float wantYaw = (float) Math.toDegrees(Math.atan2(-d.field_1352, d.field_1350));
+            float wantPitch = (float) -Math.toDegrees(Math.atan2(d.field_1351, hor));
             o[HAS] = 1;
-            o[DIST] = d.length();
-            o[YAW] = MathHelper.wrapDegrees(wantYaw - p.getYaw());
-            o[PITCH] = wantPitch - p.getPitch();
-            o[DY] = d.y;
-            o[EHP] = target.getHealth();
+            o[DIST] = d.method_1033();
+            o[YAW] = class_3532.method_15393(wantYaw - p.method_36454());
+            o[PITCH] = wantPitch - p.method_36455();
+            o[DY] = d.field_1351;
+            o[EHP] = target.method_6032();
         }
-        Vec3d v = p.getVelocity();
-        o[VX] = v.x;
-        o[VY] = v.y;
-        o[VZ] = v.z;
-        o[GROUND] = p.isOnGround() ? 1 : 0;
-        o[CD] = p.getAttackCooldownProgress(0f);
+        class_243 v = p.method_18798();
+        o[VX] = v.field_1352;
+        o[VY] = v.field_1351;
+        o[VZ] = v.field_1350;
+        o[GROUND] = p.method_24828() ? 1 : 0;
+        o[CD] = p.method_7261(0f);
         return o;
     }
 
@@ -221,18 +509,26 @@ public class AutoPlayClient implements ClientModInitializer {
     // ----------------------------------------------------------------- teacher
 
     /** Simple hand-written fighter: face the enemy, walk up, hit when in reach. The AI copies it early on. */
-    private static int[] teacherAction(double[] r) {
+    private static int[] teacherAction(double[] r, int ticks, int preset) {
         boolean has = r[HAS] == 1;
         double dist = r[DIST];
-        int forward = 0, sprint = 0, attack = 0;
+        int forward = 0, strafe = 0, jump = 0, sprint = 0, attack = 0;
         if (has) {
-            forward = dist > 2.5 ? 1 : 0;
-            sprint = dist > 5 ? 1 : 0;
-            if (dist < 3.3 && Math.abs(r[YAW]) < 15 && Math.abs(r[PITCH]) < 20 && r[CD] > 0.9) attack = 1;
+            double approach = preset == 0 ? 3.2 : (preset == 2 ? 2.2 : 2.7);
+            forward = dist > approach ? 1 : 0;
+            sprint = dist > (preset == 0 ? 7 : 5) ? 1 : 0;
+            // Alternate strafe directions to avoid running straight into the opponent.
+            if (dist < 7 && circleStrafeStatic(ticks, preset)) strafe = ((ticks / 12) % 2 == 0) ? 1 : 2;
+            if (dist < 3.2 && Math.abs(r[YAW]) < 15 && Math.abs(r[PITCH]) < 20 && r[CD] > 0.9) attack = 1;
+            if (dist < 4.5 && r[GROUND] == 1 && (ticks % (preset == 2 ? 8 : 13) == 0)) jump = 1;
         }
         int yaw = has ? nearest(YAW_BINS, (float) r[YAW]) : 3;
         int pitch = has ? nearest(PITCH_BINS, (float) r[PITCH]) : 2;
-        return new int[]{forward, 0, 0, sprint, attack, yaw, pitch};
+        return new int[]{forward, strafe, jump, sprint, attack, yaw, pitch};
+    }
+
+    private static boolean circleStrafeStatic(int ticks, int preset) {
+        return preset != 0 || ticks % 3 != 0;
     }
 
     private static int nearest(float[] bins, float want) {
@@ -245,37 +541,37 @@ public class AutoPlayClient implements ClientModInitializer {
 
     // ----------------------------------------------------------------- actions
 
-    private void applyAction(MinecraftClient mc, ClientPlayerEntity p, int[] a) {
-        mc.options.forwardKey.setPressed(a[0] == 1);
-        mc.options.backKey.setPressed(a[0] == 2);
-        mc.options.leftKey.setPressed(a[1] == 1);
-        mc.options.rightKey.setPressed(a[1] == 2);
-        mc.options.jumpKey.setPressed(a[2] == 1);
-        mc.options.sprintKey.setPressed(a[3] == 1 && a[0] == 1);
+    private void applyAction(class_310 mc, class_746 p, int[] a) {
+        mc.field_1690.field_1894.method_23481(a[0] == 1);
+        mc.field_1690.field_1881.method_23481(a[0] == 2);
+        mc.field_1690.field_1913.method_23481(a[1] == 1);
+        mc.field_1690.field_1849.method_23481(a[1] == 2);
+        mc.field_1690.field_1903.method_23481(a[2] == 1);
+        mc.field_1690.field_1867.method_23481(a[3] == 1 && a[0] == 1);
 
-        p.setYaw(p.getYaw() + YAW_BINS[a[5]]);
-        p.setPitch(MathHelper.clamp(p.getPitch() + PITCH_BINS[a[6]], -90f, 90f));
+        p.method_36456(p.method_36454() + YAW_BINS[a[5]]);
+        p.method_36457(class_3532.method_15363(p.method_36455() + PITCH_BINS[a[6]], -90f, 90f));
 
         if (a[4] == 1) {
-            HitResult hit = mc.crosshairTarget;
-            if (hit instanceof EntityHitResult ehr && mc.interactionManager != null) {
-                mc.interactionManager.attackEntity(p, ehr.getEntity());
-                p.swingHand(Hand.MAIN_HAND);
+            class_239 hit = mc.field_1765;
+            if (hit instanceof class_3966 ehr && mc.field_1761 != null) {
+                mc.field_1761.method_2918(p, ehr.method_17782());
+                p.method_6104(class_1268.field_5808);
             }
         }
     }
 
     /** Nearest living entity in range; real players are always preferred over mobs. */
-    private LivingEntity pickTarget(MinecraftClient mc, ClientPlayerEntity p) {
-        LivingEntity best = null;
+    private class_1309 pickTarget(class_310 mc, class_746 p) {
+        class_1309 best = null;
         double bestScore = Double.MAX_VALUE;
-        for (Entity e : mc.world.getEntities()) {
-            if (!(e instanceof LivingEntity) || e == p || e instanceof ArmorStandEntity) continue;
-            LivingEntity le = (LivingEntity) e;
-            if (!le.isAlive() || le.isSpectator()) continue;
-            double d = p.distanceTo(le);
+        for (class_1297 e : mc.field_1687.method_18112()) {
+            if (!(e instanceof class_1309) || e == p || e instanceof class_1531) continue;
+            class_1309 le = (class_1309) e;
+            if (!le.method_5805() || le.method_7325()) continue;
+            double d = p.method_5739(le);
             if (d > TARGET_RANGE) continue;
-            double score = d - (le instanceof PlayerEntity ? 1000.0 : 0.0);
+            double score = d + (le instanceof class_1657 ? -8.0 : 0.0);
             if (score < bestScore) {
                 bestScore = score;
                 best = le;
@@ -529,6 +825,21 @@ public class AutoPlayClient implements ClientModInitializer {
                 w[i] -= LR * (m[i] / c1) / (Math.sqrt(v[i] / c2) + 1e-8);
             }
             n = 0;
+        }
+
+        // Add a supervised demonstration to the existing policy-gradient buffer.
+        // The teacher flag gives this example a positive imitation advantage.
+        void learnExample(double[] observation, int[] action) {
+            if (observation == null || action == null || observation.length != IN || action.length != HEADS.length) return;
+            if (n >= CAP) update(0.0);
+            bObs[n] = observation.clone();
+            bAct[n] = action.clone();
+            bRew[n] = 0.0;
+            bVal[n] = 0.0;
+            bDone[n] = true;
+            bTeacher[n] = true;
+            n++;
+            if (n >= 32) update(0.0);
         }
 
         // ------------------------------------------------------ save / load
